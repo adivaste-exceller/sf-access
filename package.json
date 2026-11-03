@@ -11,19 +11,25 @@
     "ui-dist"
   ],
   "scripts": {
+    "setup": "npm install && node dist/cli.js doctor",
+    "prepare": "npm run build",
     "build": "npm run build:cli && npm run build:ui",
     "build:cli": "tsup",
     "build:ui": "vite build",
+    "doctor": "node dist/cli.js doctor",
+    "extract": "node dist/cli.js extract",
+    "start": "node dist/cli.js serve",
+    "all": "node dist/cli.js all",
     "dev:ui": "vite",
-    "extract": "tsx src/cli/index.ts extract",
-    "serve": "tsx src/cli/index.ts serve",
+    "dev:cli": "tsx src/cli/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "commander": "^12.1.0"
+    "commander": "^12.1.0",
+    "fast-xml-parser": "^4.5.7"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",
@@ -36,5 +42,6 @@
     "tsx": "^4.19.1",
     "typescript": "^5.6.2",
     "vite": "^5.4.8"
-  }
+  },
+  "license": "MIT"
 }

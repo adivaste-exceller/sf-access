@@ -9,10 +9,10 @@ const MIME: Record<string, string> = {
   '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.ico': 'image/x-icon',
 };
 
-export function serve(snapshotDir: string, port: number, open: boolean): void {
+export function serve(snapshotDir: string, port: number, open: boolean): Promise<void> {
   const snapshot = path.resolve(snapshotDir);
   if (!fs.existsSync(path.join(snapshot, 'meta.json'))) {
-    throw new Error(`No snapshot in ${snapshot}. Run "sf-access-docs extract --target-org <alias>" first.`);
+    throw new Error(`No snapshot in ${snapshot}. Run "npm run extract" first.`);
   }
   // dist/cli.js sits next to ui-dist/ in the package; in dev (src/cli) it is two levels up.
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -24,7 +24,7 @@ export function serve(snapshotDir: string, port: number, open: boolean): void {
     fs.createReadStream(file).pipe(res);
   };
 
-  http
+  const server = http
     .createServer((req, res) => {
       const url = decodeURIComponent((req.url ?? '/').split('?')[0]!);
       const root = url.startsWith('/snapshot/') ? snapshot : uiDir;
@@ -37,10 +37,27 @@ export function serve(snapshotDir: string, port: number, open: boolean): void {
         return res.end();
       }
       send(res, path.join(uiDir, 'index.html'));
-    })
-    .listen(port, '127.0.0.1', () => {
-      const url = `http://127.0.0.1:${port}`;
-      process.stderr.write(`Serving ${snapshot}\n  ${url}\n`);
-      if (open) exec(process.platform === 'win32' ? `start "" ${url}` : process.platform === 'darwin' ? `open ${url}` : `xdg-open ${url}`);
     });
+  return new Promise((resolve, reject) => {
+    const tryListen = (p: number, left: number) => {
+      const onError = (e: NodeJS.ErrnoException) => {
+        server.removeListener('listening', onListening);
+        if (e.code === 'EADDRINUSE' && left > 0) {
+          process.stderr.write(`Port ${p} is busy, trying ${p + 1}\n`);
+          tryListen(p + 1, left - 1);
+        } else reject(e);
+      };
+      const onListening = () => {
+        server.removeListener('error', onError);
+        const url = `http://127.0.0.1:${p}`;
+        process.stderr.write(`Serving ${snapshot}\n  ${url}\n  Press Ctrl+C to stop\n`);
+        if (open) exec(process.platform === 'win32' ? `start "" ${url}` : process.platform === 'darwin' ? `open ${url}` : `xdg-open ${url}`);
+        resolve();
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(p, '127.0.0.1');
+    };
+    tryListen(port, 20);
+  });
 }

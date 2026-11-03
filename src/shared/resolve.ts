@@ -1,4 +1,4 @@
-import { OBJ, TRG, type FlowInfo, type PermSet, type PermSetGroup, type Snapshot, type SfUser } from './types.js';
+import { OBJ, TRG, type FlowInfo, type LwcInfo, type PermSet, type PermSetGroup, type Route, type RouteKind, type Snapshot, type SfUser } from './types.js';
 
 export type PrincipalKind = 'profile' | 'permset' | 'group' | 'user';
 
@@ -41,6 +41,48 @@ export interface AutomationRow {
   extra: string;
   via: string[];
 }
+
+/** How a flow or component is reached: a route kind, or "nested" when it sits inside another component or flow. */
+export type TraceKind = RouteKind | 'nested';
+
+/** A screen flow, LWC or Aura component a selection can reach, grouped under the object it is reached from. */
+export interface TraceRow {
+  key: string;
+  /** Best way in. */
+  kind: TraceKind;
+  /** Every kind of way in, for filtering. */
+  kinds: TraceKind[];
+  /** Name of the best entry point (or the container, for nested rows). */
+  entry: string;
+  /** Number of further routes beyond the best one. */
+  more: number;
+  /** Group heading: the object, or "No object". */
+  group: string;
+  /** Object API name behind the group, null for the no-object group. */
+  object: string | null;
+  name: string;
+  sub: string;
+  /** First way in, plus how many more. */
+  extra: string;
+  /** Every way in, with where it is placed and what access it relies on. */
+  via: string[];
+  /** Something the selection is missing for this to work (flow access, Apex access). */
+  warn?: string;
+}
+
+export const NO_OBJECT_GROUP = 'No object (global actions, apps, utility bar)';
+
+const ROUTE_LABEL: Record<string, string> = {
+  quickAction: 'Quick action',
+  button: 'Custom button',
+  page: 'Lightning page',
+  tab: 'Tab',
+  vf: 'Visualforce page',
+  aura: 'Aura component',
+  lwc: 'LWC',
+  flow: 'Flow',
+  inferred: 'Inferred',
+};
 
 /** Plain-language flow category for labels. */
 export function flowKind(f: Pick<FlowInfo, 'pt' | 'tt'>): string {
@@ -220,6 +262,105 @@ export class Index {
       });
     }
     return { triggers, flows };
+  }
+
+  private lookups?: { flowId: Map<string, string>; apexId: Map<string, string>; appId: Map<string, string>; flowLabel: Map<string, string>; lwcByName: Map<string, LwcInfo>; objLabel: Map<string, string> };
+
+  private getLookups() {
+    if (this.lookups) return this.lookups;
+    const byType = (t: string) => new Map(Object.entries(this.s.setupEntities).filter(([, e]) => e.t === t).map(([id, e]) => [e.n, id] as const));
+    this.lookups = {
+      flowId: byType('FlowDefinition'),
+      apexId: byType('ApexClass'),
+      appId: byType('TabSet'),
+      flowLabel: new Map((this.s.flows ?? []).map((f) => [f.n, f.l || f.n] as const)),
+      lwcByName: new Map((this.s.lwcs ?? []).map((l) => [l.n, l] as const)),
+      objLabel: new Map(this.s.objects.map((o) => [o.n, o.l] as const)),
+    };
+    return this.lookups;
+  }
+
+  /**
+   * Screen flows and LWC/Aura components the selection can reach, grouped by the object they are reached from.
+   * A route counts when the selection can read the entry point's object, or (for tabs and utility bars) has the app.
+   * Needs a snapshot extracted with --metadata. Flow and Apex gaps are reported as warnings, not hidden.
+   */
+  traces(eff: Effective): { flows: TraceRow[]; lwcs: TraceRow[] } {
+    const L = this.getLookups();
+    const viewAll = eff.system.has('ModifyAllData') || eff.system.has('ViewAllData');
+    const canRead = (obj: string) => viewAll || ((eff.objects.get(obj)?.mask ?? 0) & OBJ.R) !== 0;
+    const hasApp = (app: string) => {
+      const id = L.appId.get(app);
+      return !!id && eff.setup.has(id);
+    };
+    const runFlows = eff.system.has('RunFlow');
+
+    const groups = new Map<string, { group: string; t: string; x: string; routes: Route[] }>();
+    for (const r of this.s.routes ?? []) {
+      if (r.o) {
+        if (!canRead(r.o)) continue;
+      } else if (r.ap && r.ap.length && !r.ap.some(hasApp)) continue;
+      const group = r.o ? `${L.objLabel.get(r.o) && L.objLabel.get(r.o) !== r.o ? `${L.objLabel.get(r.o)} · ` : ''}${r.o}` : NO_OBJECT_GROUP;
+      const key = `${group}|${r.t}:${r.x}`;
+      const g = groups.get(key) ?? { group, t: r.t, x: r.x, routes: [] };
+      g.routes.push(r);
+      groups.set(key, g);
+    }
+
+    const describe = (r: Route): string => {
+      let s = r.k === 'inferred' ? r.n : `${ROUTE_LABEL[r.k] ?? r.k} "${r.l || r.n}"`;
+      if (r.k === 'quickAction' || r.k === 'button') s += r.at.length ? ` · shown on ${r.at.slice(0, 3).join(', ')}${r.at.length > 3 ? ` +${r.at.length - 3}` : ''}` : ' · not placed on any layout or page we could read';
+      else if (r.k === 'tab') s += r.ap && r.ap.length ? ` · in app ${r.ap.join(', ')}` : ' · not in any app';
+      else if (r.k === 'page' && r.ap && r.ap.length) s += ` · in app ${r.ap.join(', ')}`;
+      if (r.up) s += ` · ${r.up}`;
+      return s;
+    };
+
+    const flows: TraceRow[] = [];
+    const lwcs: TraceRow[] = [];
+    for (const [key, g] of groups) {
+      const first = g.routes[0]!;
+      // Best way in: launched directly, else nested inside another component or flow, else only inferred.
+      const lead = g.routes.find((r) => r.k !== 'inferred' && !r.up) ?? g.routes.find((r) => r.k !== 'inferred') ?? first;
+      const more = g.routes.length - 1;
+      const nestedIn = lead.up ? /^inside ([^,]+)/.exec(lead.up)?.[1] : undefined;
+      const via = g.routes.slice(0, 12).map(describe);
+      if (g.routes.length > 12) via.push(`+${g.routes.length - 12} more routes`);
+      const classify = (r: Route): TraceKind => (r.k === 'inferred' ? 'inferred' : r.up ? 'nested' : r.k);
+      const row: TraceRow = {
+        key,
+        kind: classify(lead),
+        kinds: [...new Set(g.routes.map(classify))],
+        entry: lead.k === 'inferred' ? lead.n : (nestedIn ?? (lead.l || lead.n)),
+        more,
+        group: g.group,
+        object: first.o,
+        name: g.x,
+        sub: g.x,
+        extra: `${lead.k === 'inferred' ? lead.n : nestedIn ? `nested in ${nestedIn}` : `${ROUTE_LABEL[lead.k] ?? lead.k} · ${lead.l || lead.n}`}${more > 0 ? ` +${more}` : ''}${lead.k !== 'inferred' && !nestedIn && (lead.k === 'quickAction' || lead.k === 'button') && !lead.at.length ? ' · not placed' : ''}`,
+        via,
+      };
+      if (g.t === 'flow') {
+        row.name = L.flowLabel.get(g.x) ?? g.x;
+        const id = L.flowId.get(g.x);
+        if (!runFlows && !(id && eff.setup.has(id))) row.warn = 'no Run Flows permission or flow access found';
+        flows.push(row);
+      } else {
+        if (g.t === 'aura') row.sub = 'Aura component';
+        else {
+          const info = L.lwcByName.get(g.x);
+          if (info?.l) row.name = info.l;
+          const missing = (info?.apex ?? []).filter((c) => {
+            const id = L.apexId.get(c);
+            return id && !eff.setup.has(id);
+          });
+          if (missing.length) row.warn = `no access to Apex: ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ` +${missing.length - 3}` : ''}`;
+        }
+        lwcs.push(row);
+      }
+    }
+    const order = (a: TraceRow, b: TraceRow) => (a.group === NO_OBJECT_GROUP ? 1 : 0) - (b.group === NO_OBJECT_GROUP ? 1 : 0) || a.group.localeCompare(b.group) || a.name.localeCompare(b.name);
+    return { flows: flows.sort(order), lwcs: lwcs.sort(order) };
   }
 
   /** Union of everything the given principals are directly granted. */

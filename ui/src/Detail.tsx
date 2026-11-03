@@ -1,33 +1,18 @@
 import { useMemo, useRef, useState, type RefObject } from 'react';
 import { ContextMenu, copyText, type MenuItem } from './ContextMenu';
-import type { Effective, Index, Principal } from '../../src/shared/resolve';
+import type { Effective, Index, Principal, TraceRow } from '../../src/shared/resolve';
 import { looksLikeTestClass } from '../../src/shared/apex';
 import { flowKind } from '../../src/shared/resolve';
 import { FLD, OBJ } from '../../src/shared/types';
 import { compileRules, type Rules } from './filters';
-import { DEFAULT_LOOK, Icon, IconTile, LOOK } from './icons';
+import { DEFAULT_LOOK, Icon, LOOK } from './icons';
+import type { TraceUi } from './prefs';
+import type { OnMenu, Row, SectionData } from './rows';
+import { SectionHead } from './SectionHead';
+import { TraceSection } from './TraceSection';
 
-interface Row {
-  key: string;
-  name: string;
-  sub?: string;
-  /** Right-aligned plain text, e.g. org-wide default or expiry. */
-  extra?: string;
-  mask?: number;
-  via?: string[];
-  /** Apex classes: true for test classes. */
-  test?: boolean;
-}
+import { DEFAULT_TRACE as DEFAULT_TRACE_UI } from './prefs';
 
-interface SectionData {
-  key: string;
-  title: string;
-  rows: Row[];
-  /** Rows removed by exclusion rules. */
-  hidden: number;
-  flags?: [string, number][];
-  note?: string;
-}
 
 const OBJ_FLAGS: [string, number][] = [['R', OBJ.R], ['C', OBJ.C], ['E', OBJ.E], ['D', OBJ.D], ['VA', OBJ.VA], ['MA', OBJ.MA]];
 const FLD_FLAGS: [string, number][] = [['R', FLD.R], ['E', FLD.E]];
@@ -67,11 +52,8 @@ function Flags({ mask, flags }: { mask: number; flags: [string, number][] }) {
   );
 }
 
-type OnMenu = (e: React.MouseEvent, data: SectionData, row: Row | null) => void;
-
 function Section({ data, filtering, open, onToggle, onMenu }: { data: SectionData; filtering: boolean; open: boolean; onToggle: () => void; onMenu: OnMenu }) {
-  const { title, rows, hidden, flags, note, key } = data;
-  const look = LOOK[key] ?? DEFAULT_LOOK;
+  const { rows, hidden, flags, note } = data;
   const [limit, setLimit] = useState(ROW_PAGE);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const total = data.rows.length;
@@ -84,19 +66,11 @@ function Section({ data, filtering, open, onToggle, onMenu }: { data: SectionDat
   };
   return (
     <section className={`section ${isOpen ? 'open' : ''}`}>
-      <button className="section-head" data-nav="1" data-section="1" onClick={onToggle} onContextMenu={(e) => onMenu(e, data, null)} aria-expanded={isOpen}>
-        <span className={`chev ${isOpen ? 'open' : ''}`}>
-          <Icon name="chevron" size={14} />
-        </span>
-        <IconTile name={look.icon} hue={look.hue} />
-        <span className="section-title">{title}</span>
-        {hidden > 0 && <span className="muted small">{hidden} excluded</span>}
-        <span className="count">{filtering ? `${total} match` : total}</span>
-      </button>
+      <SectionHead data={data} isOpen={isOpen} countText={filtering ? `${total} match` : total} onToggle={onToggle} onMenu={onMenu} />
       {isOpen && (
         <div className="section-body">
           {note && <div className="note small muted">{note}</div>}
-          {rows.length === 0 && <div className="empty">{total === 0 && hidden > 0 && !filtering ? 'Everything here is excluded by your rules.' : 'No matches.'}</div>}
+          {rows.length === 0 && <div className="empty">{total === 0 && hidden > 0 && !filtering ? 'Everything here is hidden by your exclusion rules or filters.' : 'No matches.'}</div>}
           {rows.slice(0, limit).map((r) => (
             <div key={r.key} className="row-wrap">
               <button className={`row ${r.via ? 'clickable' : ''}`} data-nav="1" aria-expanded={r.via ? expanded.has(r.key) : undefined} onClick={() => r.via && toggle(r.key)} onContextMenu={(e) => onMenu(e, data, r)}>
@@ -105,6 +79,7 @@ function Section({ data, filtering, open, onToggle, onMenu }: { data: SectionDat
                   {r.sub && <span className="row-sub mono">{r.sub}</span>}
                 </span>
                 {r.extra && <span className="row-extra small muted">{r.extra}</span>}
+                {r.warn && <span className="row-warn small">{r.warn}</span>}
                 {flags && r.mask !== undefined && <Flags mask={r.mask} flags={flags} />}
               </button>
               {expanded.has(r.key) && r.via && (
@@ -130,7 +105,7 @@ function Section({ data, filtering, open, onToggle, onMenu }: { data: SectionDat
 const byName = (a: Row, b: Row) => a.name.localeCompare(b.name);
 
 /** Raw rows per section key, before exclusion rules and the text filter. */
-function buildRows(index: Index, eff: Effective, selected: Principal[], auto: ReturnType<Index['automation']>) {
+function buildRows(index: Index, eff: Effective, selected: Principal[], auto: ReturnType<Index['automation']>, traces: ReturnType<Index['traces']>) {
   const s = index.s;
   const flowById = new Map((s.flows ?? []).map((f) => [f.id, f]));
   const objInfo = new Map(s.objects.map((o) => [o.n, o]));
@@ -155,6 +130,9 @@ function buildRows(index: Index, eff: Effective, selected: Principal[], auto: Re
     const list = sections.get(t) ?? [];
     const row: Row = { key: id, name: e?.l ?? e?.n ?? id, sub: e?.l ? e.n : e && e.n !== id ? undefined : id, via: g.via };
     if (t === 'ApexClass' && e) row.test = s.meta.testDetection === 'body' ? !!e.test : looksLikeTestClass(e.n);
+    // App ids that no API can name are internal apps Salesforce grants to every permission set; a profile's own
+    // visible apps (as in its Profile XML) are all named, so these are noise.
+    if (t === 'TabSet' && e && e.n === id) row.internal = true;
     if (t === 'FlowDefinition') {
       const f = flowById.get(id);
       if (f) row.extra = `${flowKind(f)}${f.a ? '' : ' · inactive'}`;
@@ -186,7 +164,14 @@ function buildRows(index: Index, eff: Effective, selected: Principal[], auto: Re
   }
   sections.set('sources', sources);
   sections.set('people', people);
-  for (const rows of sections.values()) rows.sort(byName);
+  // Trace rows arrive ordered by object group, then name; sorting them by name alone would scatter the groups.
+  const toRow = (t: TraceRow): Row => ({
+    key: t.key, name: t.name, sub: t.sub, extra: t.extra, via: t.via, group: t.group, obj: t.object, warn: t.warn,
+    kind: t.kind, kinds: t.kinds, entry: t.entry, more: t.more,
+  });
+  sections.set('flowTrace', traces.flows.map(toRow));
+  sections.set('lwcTrace', traces.lwcs.map(toRow));
+  for (const [key, rows] of sections) if (key !== 'flowTrace' && key !== 'lwcTrace') rows.sort(byName);
   return sections;
 }
 
@@ -201,13 +186,16 @@ interface DetailProps {
   onToggleOpen: (key: string) => void;
   showInactive: boolean;
   onShowInactive: (v: boolean) => void;
+  /** Toolbar state of the trace sections, by section key. */
+  trace: Record<string, TraceUi>;
+  onTrace: (key: string, patch: Partial<TraceUi>) => void;
   /** Adds an exclusion pattern for a section key. */
   onExclude: (key: string, pattern: string) => void;
   onRemove: (p: Principal) => void;
 }
 
 // Sections rendered explicitly; every other key is a setup entity type and gets a generic section.
-const FIXED_SECTIONS = new Set(['objects', 'fields', 'triggers', 'recordFlows', 'tabs', 'system', 'sources', 'people']);
+const FIXED_SECTIONS = new Set(['objects', 'fields', 'triggers', 'recordFlows', 'flowTrace', 'lwcTrace', 'tabs', 'system', 'sources', 'people']);
 
 // Sections whose rows are not metadata items, so excluding them makes no sense.
 const NO_EXCLUDE = new Set(['sources', 'people']);
@@ -216,8 +204,14 @@ const accessOf = (d: SectionData, r: Row): string => (d.flags && r.mask !== unde
 
 /** Spreadsheet-ready table of what is currently shown in a section. */
 function tableOf(d: SectionData): string {
-  const head = ['Name', 'API name', ...(d.flags ? d.flags.map(([l]) => l) : ['Detail'])];
-  const lines = d.rows.map((r) => [r.name, r.sub ?? '', ...(d.flags ? d.flags.map(([, bit]) => (r.mask! & bit ? 'Y' : '')) : [r.extra ?? ''])]);
+  const grouped = d.rows.some((r) => r.group);
+  const head = [...(grouped ? ['Group'] : []), 'Name', 'API name', ...(d.flags ? d.flags.map(([l]) => l) : ['Detail', ...(d.rows.some((r) => r.warn) ? ['Warning'] : [])])];
+  const lines = d.rows.map((r) => [
+    ...(grouped ? [r.group ?? ''] : []),
+    r.name,
+    r.sub ?? '',
+    ...(d.flags ? d.flags.map(([, bit]) => (r.mask! & bit ? 'Y' : '')) : [r.extra ?? '', ...(d.rows.some((x) => x.warn) ? [r.warn ?? ''] : [])]),
+  ]);
   return [head, ...lines].map((cols) => cols.join('\t')).join('\n');
 }
 
@@ -226,7 +220,7 @@ function onSectionsKey(e: React.KeyboardEvent<HTMLDivElement>) {
   const active = document.activeElement as HTMLElement | null;
   if (!active?.dataset.nav) return;
   if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-    if (active.dataset.section) {
+    if (active.dataset.section || active.dataset.group) {
       const expanded = active.getAttribute('aria-expanded') === 'true';
       if ((e.key === 'ArrowRight') !== expanded) {
         e.preventDefault();
@@ -234,7 +228,8 @@ function onSectionsKey(e: React.KeyboardEvent<HTMLDivElement>) {
       }
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
-      active.closest('.section')?.querySelector<HTMLElement>('[data-section]')?.focus();
+      // Left on a row goes to its group header if it has one, otherwise to the section header.
+      (active.closest('.group')?.querySelector<HTMLElement>('[data-group]') ?? active.closest('.section')?.querySelector<HTMLElement>('[data-section]'))?.focus();
     }
     return;
   }
@@ -247,7 +242,7 @@ function onSectionsKey(e: React.KeyboardEvent<HTMLDivElement>) {
   els[next]?.focus();
 }
 
-export function Detail({ index, selected, rules, filter, onFilter, filterRef, open, onToggleOpen, showInactive, onShowInactive, onExclude, onRemove }: DetailProps) {
+export function Detail({ index, selected, rules, filter, onFilter, filterRef, open, onToggleOpen, showInactive, onShowInactive, trace, onTrace, onExclude, onRemove }: DetailProps) {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number>();
@@ -294,7 +289,8 @@ export function Detail({ index, selected, rules, filter, onFilter, filterRef, op
 
   const eff = useMemo(() => index.effective(selected), [index, selected]);
   const auto = useMemo(() => index.automation(eff, showInactive), [index, eff, showInactive]);
-  const raw = useMemo(() => buildRows(index, eff, selected, auto), [index, eff, selected, auto]);
+  const traces = useMemo(() => index.traces(eff), [index, eff]);
+  const raw = useMemo(() => buildRows(index, eff, selected, auto, traces), [index, eff, selected, auto, traces]);
   const compiled = useMemo(() => compileRules(rules), [rules]);
 
   // Apply exclusion rules (counts and stats reflect them), then the text filter.
@@ -303,7 +299,7 @@ export function Detail({ index, selected, rules, filter, onFilter, filterRef, op
   const visible = useMemo(() => {
     const out = new Map<string, { rows: Row[]; hidden: number }>();
     for (const [key, rows] of raw) {
-      const kept = key === 'sources' || key === 'people' ? rows : rows.filter((r) => !compiled.excluded(key, [r.name, r.sub]));
+      const kept = key === 'sources' || key === 'people' ? rows : rows.filter((r) => !r.internal && !compiled.excluded(key, [r.name, r.sub, r.obj ?? undefined]));
       out.set(key, { rows: kept, hidden: rows.length - kept.length });
     }
     return out;
@@ -324,8 +320,12 @@ export function Detail({ index, selected, rules, filter, onFilter, filterRef, op
     );
   }
 
-  const match = (rows: Row[]) => (q ? rows.filter((r) => r.name.toLowerCase().includes(q) || r.sub?.toLowerCase().includes(q) || r.extra?.toLowerCase().includes(q)) : rows);
-  const count = (key: string) => visible.get(key)?.rows.length ?? 0;
+  const match = (rows: Row[]) => (q ? rows.filter((r) => r.name.toLowerCase().includes(q) || r.sub?.toLowerCase().includes(q) || r.extra?.toLowerCase().includes(q) || r.group?.toLowerCase().includes(q)) : rows);
+  // Trace sections list a target once per object, so their tiles count distinct flows/components.
+  const count = (key: string) => {
+    const rows = visible.get(key)?.rows ?? [];
+    return key === 'flowTrace' || key === 'lwcTrace' ? new Set(rows.map((r) => r.sub)).size : rows.length;
+  };
   const section = (key: string, title: string, extra: Partial<SectionData> = {}): SectionData => {
     const v = visible.get(key) ?? { rows: [], hidden: 0 };
     return { key, title, rows: match(v.rows), hidden: v.hidden, ...extra };
@@ -333,7 +333,7 @@ export function Detail({ index, selected, rules, filter, onFilter, filterRef, op
   // For an unfiltered section the total is rows.length; with a text filter it is the matches.
   const types = sortTypes([...raw.keys()].filter((k) => !FIXED_SECTIONS.has(k)));
 
-  const stats: [string, string][] = [['Objects', 'objects'], ['Triggers', 'triggers'], ['Record flows', 'recordFlows'], ['Apex classes', 'ApexClass'], ['VF pages', 'ApexPage'], ['Flows', 'FlowDefinition'], ['Apps', 'TabSet'], ['Tabs', 'tabs'], ['System perms', 'system']];
+  const stats: [string, string][] = [['Objects', 'objects'], ['Triggers', 'triggers'], ['Record flows', 'recordFlows'], ['Screen flows', 'flowTrace'], ['LWCs', 'lwcTrace'], ['Apex classes', 'ApexClass'], ['VF pages', 'ApexPage'], ['Flows', 'FlowDefinition'], ['Apps', 'TabSet'], ['Tabs', 'tabs'], ['System perms', 'system']];
   const anyExcluded = [...visible.values()].some((v) => v.hidden > 0);
 
   return (
@@ -393,11 +393,32 @@ export function Detail({ index, selected, rules, filter, onFilter, filterRef, op
             const data = section(key, title, extra);
             return <Section key={key} filtering={filtering} data={data} open={open.has(key)} onToggle={() => onToggleOpen(key)} onMenu={openMenu} />;
           };
+          // Flow and LWC traces get their own toolbar (search, entry-type chips, grouping).
+          const renderTrace = (key: 'flowTrace' | 'lwcTrace', title: string, note: string) => (
+            <TraceSection
+              key={key}
+              filtering={filtering}
+              data={section(key, title, { note })}
+              open={open.has(key)}
+              onToggle={() => onToggleOpen(key)}
+              onMenu={openMenu}
+              ui={trace[key] ?? DEFAULT_TRACE_UI}
+              onUi={(patch) => onTrace(key, patch)}
+            />
+          );
           return (
             <>
               {render('objects', 'Objects', { flags: OBJ_FLAGS, note: 'R read · C create · E edit · D delete · VA view all · MA modify all. Click a row to see what grants it.' })}
               {render('triggers', 'Triggers on their objects', { note: 'Not granted: triggers run for anyone who changes the object. Listed when the selection has Create (insert), Edit (update) or Delete on it. Trigger logic is not evaluated, so read each row as "can fire".' })}
-              {render('recordFlows', 'Record-triggered flows on their objects', { note: 'Not granted: they fire on record changes, like triggers, using the same Create/Edit/Delete rule. Entry conditions are not evaluated. Screen and other flows granted to them are under Flows.' })}
+              {render('recordFlows', 'Record-triggered flows on their objects', { note: 'Not granted: they fire on record changes, like triggers, using the same Create/Edit/Delete rule. Entry conditions are not evaluated. Screen flows they can launch are under Screen flows by object.' })}
+              {index.s.meta.hasMetadata ? (
+                <>
+                  {renderTrace('flowTrace', 'Screen flows', 'How each flow is launched. Listed when the selection can read the object (or has the app, for tabs and utility bars). Amber text is something missing. Click a row for every way in.')}
+                  {renderTrace('lwcTrace', 'LWCs', 'How each component is reached. "Nested" sits inside another component or flow; "Inferred" comes from the objects a component declares or reads, not from a place it is used.')}
+                </>
+              ) : (
+                <div className="section-hint small muted">Screen flow and LWC entry points not extracted. Re-run with <code className="mono">--metadata</code> to trace them from objects, quick actions, buttons, pages and tabs.</div>
+              )}
               {index.s.meta.hasFields ? (
                 render('fields', 'Fields', { flags: FLD_FLAGS })
               ) : (

@@ -12,11 +12,36 @@ export interface UiState {
   open: string[];
   /** Include inactive triggers and flows. */
   showInactive: boolean;
+  /** Toolbar state of the flow and LWC trace sections, by section key. */
+  trace: Record<string, TraceUi>;
 }
+
+export type TraceGroupBy = 'object' | 'kind' | 'none';
+
+export interface TraceUi {
+  q: string;
+  /** Entry-type chip: 'all' or a TraceKind. */
+  kind: string;
+  by: TraceGroupBy;
+  /** Hide rows that carry a warning (missing Run Flows or Apex access). */
+  hideWarn: boolean;
+}
+
+export const DEFAULT_TRACE: TraceUi = { q: '', kind: 'all', by: 'object', hideWarn: false };
+
+const sanitizeTrace = (v: unknown): TraceUi => {
+  const t = (v ?? {}) as Partial<TraceUi>;
+  return {
+    q: typeof t.q === 'string' ? t.q : '',
+    kind: typeof t.kind === 'string' ? t.kind : 'all',
+    by: t.by === 'kind' || t.by === 'none' ? t.by : 'object',
+    hideWarn: t.hideWarn === true,
+  };
+};
 
 const KINDS: PrincipalKind[] = ['profile', 'permset', 'group', 'user'];
 
-export const DEFAULT_UI: UiState = { kind: 'profile', selected: [], railQuery: '', onlyUsed: true, filter: '', open: [], showInactive: false };
+export const DEFAULT_UI: UiState = { kind: 'profile', selected: [], railQuery: '', onlyUsed: true, filter: '', open: [], showInactive: false, trace: {} };
 
 const storageKey = (alias: string) => `ui-state:${alias}`;
 
@@ -39,6 +64,7 @@ export function loadUi(alias: string, snap: Snapshot): UiState {
       filter: typeof p.filter === 'string' ? p.filter : '',
       open: Array.isArray(p.open) ? p.open.filter((k): k is string => typeof k === 'string') : [],
       showInactive: p.showInactive === true,
+      trace: Object.fromEntries(['flowTrace', 'lwcTrace'].map((k) => [k, sanitizeTrace((p.trace as Record<string, unknown> | undefined)?.[k])])),
     };
   } catch {
     return DEFAULT_UI;

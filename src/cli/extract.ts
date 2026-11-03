@@ -2,9 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SfClient, resolveOrg } from './client.js';
 import { bodyIsTest } from '../shared/apex.js';
+import { buildGraph } from './graph.js';
+import { cleanup as cleanupMetadata, retrieveMetadata, type Retrieved } from './metadata.js';
 import {
   FLD, OBJ, SNAPSHOT_FILES, TRG,
-  type Assignment, type FlowInfo, type TriggerInfo, type ObjectInfo, type PermSet, type PermSetGroup, type PsType, type Role, type SetupEntity, type SfUser, type Snapshot,
+  type Assignment, type FlowInfo, type LwcInfo, type Route, type TriggerInfo, type ObjectInfo, type PermSet, type PermSetGroup, type PsType, type Role, type SetupEntity, type SfUser, type Snapshot,
 } from '../shared/types.js';
 
 export interface ExtractOptions {
@@ -13,6 +15,10 @@ export interface ExtractOptions {
   fields: boolean;
   includePortal: boolean;
   detectTests: boolean;
+  /** Retrieve metadata and trace flow/LWC entry points. */
+  metadata: boolean;
+  /** Keep the retrieved files in this folder instead of a deleted temp folder. */
+  keepMetadata?: string;
   concurrency: number;
 }
 
@@ -258,6 +264,31 @@ export async function extract(opts: ExtractOptions): Promise<void> {
     }, [] as FlowInfo[]),
   );
 
+  // ---- Phase 4 (opt-in): entry points for screen flows and LWCs. Needs the metadata files, so they are retrieved into a
+  // temporary project (read-only for the org), parsed, and the files are deleted again.
+  let routes: Route[] = [];
+  let lwcInfos: LwcInfo[] = [];
+  let hasMetadata = false;
+  let graphStats: Record<string, number> = {};
+  if (opts.metadata) {
+    log('Phase 4: metadata for flow and LWC entry points (retrieve into a temp folder, read-only)');
+    const got = await timed('retrieve', () => optional(warnings, 'Metadata retrieve', () => retrieveMetadata(opts.org, org.apiVersion, warnings, opts.keepMetadata), null as Retrieved | null));
+    if (got) {
+      try {
+        const g = await timed('parse', async () => buildGraph(got.dir));
+        routes = g.routes;
+        lwcInfos = g.lwcs;
+        graphStats = g.stats;
+        hasMetadata = true;
+      } catch (e) {
+        warnings.push(`Metadata parse failed: ${(e as Error).message.split('\n')[0]}`);
+        log(`  ! ${warnings[warnings.length - 1]}`);
+      } finally {
+        cleanupMetadata(got, !!opts.keepMetadata);
+      }
+    }
+  }
+
   // Opt-in: read class bodies to flag test classes exactly. Body cannot be filtered in SOQL, so the bodies of the
   // referenced unmanaged classes are fetched in small batches and checked here. Managed-package bodies are hidden.
   let testDetection: 'body' | undefined;
@@ -278,17 +309,18 @@ export async function extract(opts: ExtractOptions): Promise<void> {
   const snapshot: Snapshot = {
     meta: {
       version: 1, alias: org.alias, username: org.username, instanceUrl: org.instanceUrl, apiVersion: org.apiVersion,
-      extractedAt: new Date().toISOString(), includePortal: opts.includePortal, hasFields: opts.fields, testDetection, warnings,
+      extractedAt: new Date().toISOString(), includePortal: opts.includePortal, hasFields: opts.fields, testDetection, hasMetadata, warnings,
       counts: {
         profiles: permSets.filter((p) => p.type === 'Profile').length,
         permissionSets: permSets.filter((p) => p.type === 'Regular' || p.type === 'Standard').length,
         groups: groups.length, users: users.length, assignments: assignments.length, roles: roles.length, mutingSets: mutingIds.size,
-        triggers: triggers.length, flows: flows.length,
+        triggers: triggers.length, flows: flows.length, routes: routes.length, lwcs: lwcInfos.length,
+        ...Object.fromEntries(Object.entries(graphStats).filter(([k]) => k.startsWith('route:'))),
         objectGrants: objRows.length, setupGrants: setupRows.length, tabGrants: tabRows.length,
         fieldGrants: Object.values(fieldPerms).reduce((n, a) => n + a.length, 0), apiRequests: c.requests,
       },
     },
-    permissionSets: permSets, groups, users, assignments, objectPerms, fieldPerms, setupAccess, setupEntities, tabs, objects: entityRows, roles, triggers, flows,
+    permissionSets: permSets, groups, users, assignments, objectPerms, fieldPerms, setupAccess, setupEntities, tabs, objects: entityRows, roles, triggers, flows, routes, lwcs: lwcInfos,
   };
   fs.mkdirSync(opts.out, { recursive: true });
   for (const key of SNAPSHOT_FILES) fs.writeFileSync(path.join(opts.out, `${key}.json`), JSON.stringify(snapshot[key]));

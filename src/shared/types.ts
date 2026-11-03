@@ -51,6 +51,8 @@ export interface SnapshotMeta {
   hasFields: boolean;
   /** 'body' when test classes were detected from class bodies (--detect-tests); absent means name-based guessing. */
   testDetection?: 'body';
+  /** True when routes (flow and LWC entry points) were extracted with --metadata. */
+  hasMetadata?: boolean;
   counts: Record<string, number>;
   warnings: string[];
 }
@@ -108,6 +110,42 @@ export interface SetupEntity {
   test?: boolean;
 }
 
+export type RouteKind = 'quickAction' | 'button' | 'page' | 'tab' | 'vf' | 'aura' | 'lwc' | 'flow' | 'inferred';
+
+/**
+ * One way a user can reach a screen flow, LWC or Aura component: an entry point (quick action, custom button, Lightning
+ * page, tab, ...) that leads to the target. Built from retrieved metadata, so it needs extract --metadata.
+ */
+export interface Route {
+  /** Target type. */
+  t: 'flow' | 'lwc' | 'aura';
+  /** Target API name: flow API name, LWC folder name or Aura bundle name. */
+  x: string;
+  k: RouteKind;
+  /** Object the entry point belongs to; null when it is not object-specific (global action, app page, utility bar). */
+  o: string | null;
+  /** Entry point name (quick action, button, page, tab or component). */
+  n: string;
+  l?: string;
+  /** Layouts and pages where the entry point is placed ("layout:X", "page:Y"). Empty when none was found. */
+  at: string[];
+  /** Apps through which a non-object entry point (tab, utility bar) is reachable. */
+  ap?: string[];
+  /** Set when the route is inherited from a container, e.g. "inside LWC ex_createBooking". */
+  up?: string;
+}
+
+export interface LwcInfo {
+  n: string;
+  l?: string;
+  /** Declared targets, e.g. lightning__RecordPage. */
+  targets: string[];
+  /** Apex classes imported by the component. */
+  apex: string[];
+  /** Objects imported through @salesforce/schema. */
+  schema: string[];
+}
+
 export interface ObjectInfo {
   n: string;
   l: string;
@@ -143,10 +181,13 @@ export interface Snapshot {
   /** Absent in snapshots made before triggers and flows were extracted. */
   triggers: TriggerInfo[];
   flows: FlowInfo[];
+  /** Empty unless extracted with --metadata. */
+  routes: Route[];
+  lwcs: LwcInfo[];
 }
 
 /** Files that older snapshots may not have; the UI treats a missing one as empty. */
-export const OPTIONAL_SNAPSHOT_FILES = ['triggers', 'flows'] as const;
+export const OPTIONAL_SNAPSHOT_FILES = ['triggers', 'flows', 'routes', 'lwcs'] as const;
 
 export const SNAPSHOT_FILES = [
   'meta',
@@ -163,4 +204,6 @@ export const SNAPSHOT_FILES = [
   'roles',
   'triggers',
   'flows',
+  'routes',
+  'lwcs',
 ] as const;

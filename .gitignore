@@ -2,5 +2,11 @@ node_modules
 dist
 ui-dist
 snapshot
-snapshots
+# Snapshots contain org data (users, access). Never commit them.
+snapshots/*
+!snapshots/.gitkeep
+retrieved
 *.log
+.env
+.env.*
+.DS_Store

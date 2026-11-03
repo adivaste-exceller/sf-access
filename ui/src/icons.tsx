@@ -34,6 +34,14 @@ const PATHS: Record<string, ReactNode> = {
   ),
   close: <path d="M6 6l12 12M18 6L6 18" />,
   bolt: <path d="M13 2L4 14h7l-1 8 9-12h-7z" />,
+  route: (
+    <>
+      <circle cx="6" cy="18" r="2.5" />
+      <circle cx="18" cy="6" r="2.5" />
+      <path d="M8.5 18H15a3 3 0 003-3V8.5M6 15.5V9a3 3 0 013-3h6.5" />
+    </>
+  ),
+  puzzle: <path d="M4 5h6v2.5a2 2 0 104 0V5h6v6h-2.5a2 2 0 100 4H20v6h-6v-2.5a2 2 0 10-4 0V21H4v-6h2.5a2 2 0 100-4H4z" />,
 };
 
 export type IconName = keyof typeof PATHS;
@@ -66,6 +74,8 @@ export const LOOK: Record<string, Look> = {
   fields: { icon: 'field', hue: 'blue' },
   triggers: { icon: 'bolt', hue: 'orange' },
   recordFlows: { icon: 'flow', hue: 'green' },
+  flowTrace: { icon: 'route', hue: 'green' },
+  lwcTrace: { icon: 'puzzle', hue: 'cyan' },
   ApexClass: { icon: 'code', hue: 'violet' },
   ApexPage: { icon: 'page', hue: 'amber' },
   FlowDefinition: { icon: 'flow', hue: 'green' },

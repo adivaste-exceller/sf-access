@@ -6,7 +6,7 @@ import { Rail } from './Rail';
 import { Settings, type RuleTarget } from './Settings';
 import { loadRules, saveRules, type Rules } from './filters';
 import { Icon } from './icons';
-import { loadUi, saveUi, type UiState } from './prefs';
+import { DEFAULT_TRACE, loadUi, saveUi, type UiState } from './prefs';
 
 const TAB_KEYS: PrincipalKind[] = ['profile', 'permset', 'group', 'user'];
 
@@ -66,6 +66,7 @@ export function Workspace({ snap, theme, onTheme }: { snap: Snapshot; theme: 'da
       { key: 'objects', title: 'Objects' },
       { key: 'triggers', title: 'Triggers' },
       { key: 'recordFlows', title: 'Record-triggered flows' },
+      ...(snap.meta.hasMetadata ? [{ key: 'flowTrace', title: 'Screen flows' }, { key: 'lwcTrace', title: 'LWCs' }] : []),
       ...(snap.meta.hasFields ? [{ key: 'fields', title: 'Fields' }] : []),
       ...types.map((t) => ({ key: t, title: TYPE_TITLES[t] ?? t })),
       { key: 'tabs', title: 'Tabs' },
@@ -145,6 +146,8 @@ export function Workspace({ snap, theme, onTheme }: { snap: Snapshot; theme: 'da
           onToggleOpen={toggleOpen}
           showInactive={ui.showInactive}
           onShowInactive={(showInactive) => patch({ showInactive })}
+          trace={ui.trace}
+          onTrace={(key, p) => setUi((u) => ({ ...u, trace: { ...u.trace, [key]: { ...DEFAULT_TRACE, ...u.trace[key], ...p } } }))}
           onExclude={(key, pattern) => setRules((r) => ((r[key] ?? '').split('\n').some((l) => l.trim() === pattern) ? r : { ...r, [key]: [(r[key] ?? '').replace(/\s+$/, ''), pattern].filter(Boolean).join('\n') }))}
           onRemove={(p: Principal) => patch({ selected: ui.selected.filter((s) => !(s.kind === p.kind && s.id === p.id)) })}
         />
