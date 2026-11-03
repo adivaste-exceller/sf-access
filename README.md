@@ -10,8 +10,8 @@ License: MIT.
 You need [Node.js 20+](https://nodejs.org) and the [Salesforce CLI](https://developer.salesforce.com/tools/salesforcecli) (`npm install -g @salesforce/cli`).
 
 ```bash
-git clone <this-repo-url> sf-access-docs
-cd sf-access-docs
+git clone https://github.com/adivaste-exceller/sf-access.git
+cd sf-access
 npm run setup                          # installs, builds, then checks your machine
 
 sf org login web --alias myorg         # once per org (add --instance-url https://test.salesforce.com for a sandbox)
